@@ -188,18 +188,19 @@ async function checkBtcBatch(addresses: string[]): Promise<Record<string, number
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const batchSize = Math.min(body.batchSize || 15, 30);
+    const batchSize = Math.min(body.batchSize || 10, 25);
     const customPhrases: string[] = body.phrases || [];
 
-    // Cargar estadísticas actuales de Supabase (con try/catch seguro)
     let currentIdx = 0;
     let foundWalletsCount = 0;
+    let totalDbPhrases = 0;
 
     try {
       const { data: stats } = await supabaseAdmin.from('scan_stats').select('*').eq('id', 'main').single();
       if (stats) {
         currentIdx = Number(stats.processed || 0);
         foundWalletsCount = Number(stats.found_wallets || 0);
+        totalDbPhrases = Number(stats.total_phrases || 0);
       }
     } catch {}
 
@@ -208,25 +209,42 @@ export async function POST(req: NextRequest) {
     if (customPhrases.length > 0) {
       phrasesToScan = customPhrases.slice(0, batchSize);
     } else {
-      // 1. Intentar leer desde seeds_200k.txt en el proyecto
-      const seedFilePath = path.join(process.cwd(), 'seeds_200k.txt');
-      const publicSeedPath = path.join(process.cwd(), 'public', 'seeds_200k.txt');
-      const targetPath = fs.existsSync(seedFilePath) ? seedFilePath : (fs.existsSync(publicSeedPath) ? publicSeedPath : null);
+      // 1. Intentar cargar semillas desde la base de datos Supabase (mnemonic_seeds)
+      try {
+        const { data: dbSeeds, count } = await supabaseAdmin
+          .from('mnemonic_seeds')
+          .select('phrase', { count: 'exact' })
+          .range(currentIdx, currentIdx + batchSize - 1);
 
-      if (targetPath) {
-        try {
-          const fileContent = fs.readFileSync(targetPath, 'utf-8');
-          const lines = fileContent.split('\n').map(l => l.trim()).filter(Boolean);
-          if (lines.length > 0) {
-            if (currentIdx >= lines.length) {
-              currentIdx = 0;
+        if (count) totalDbPhrases = count;
+
+        if (dbSeeds && dbSeeds.length > 0) {
+          phrasesToScan = dbSeeds.map(s => s.phrase);
+        }
+      } catch {}
+
+      // 2. Si no hay semillas en Supabase, intentar cargar desde seeds_200k.txt local/public
+      if (phrasesToScan.length === 0) {
+        const seedFilePath = path.join(process.cwd(), 'seeds_200k.txt');
+        const publicSeedPath = path.join(process.cwd(), 'public', 'seeds_200k.txt');
+        const targetPath = fs.existsSync(seedFilePath) ? seedFilePath : (fs.existsSync(publicSeedPath) ? publicSeedPath : null);
+
+        if (targetPath) {
+          try {
+            const fileContent = fs.readFileSync(targetPath, 'utf-8');
+            const lines = fileContent.split('\n').map(l => l.trim()).filter(Boolean);
+            if (lines.length > 0) {
+              totalDbPhrases = lines.length;
+              if (currentIdx >= lines.length) {
+                currentIdx = 0;
+              }
+              phrasesToScan = lines.slice(currentIdx, currentIdx + batchSize);
             }
-            phrasesToScan = lines.slice(currentIdx, currentIdx + batchSize);
-          }
-        } catch {}
+          } catch {}
+        }
       }
 
-      // 2. Generador aleatorio BIP-39 continuo si no hay archivo de semillas
+      // 3. Si tampoco hay archivo, usar el generador aleatorio BIP39
       if (phrasesToScan.length === 0) {
         for (let i = 0; i < batchSize; i++) {
           phrasesToScan.push(bip39.generateMnemonic());
@@ -259,24 +277,28 @@ export async function POST(req: NextRequest) {
     ]);
 
     const newlyFound: Record<string, unknown>[] = [];
+    const scanned_items: any[] = [];
+
     for (const item of validItems) {
       const eth_bal = ethBals[item.eth] || 0;
       const bsc_bal = bscBals[item.eth] || 0;
       const sol_bal = solBals[item.sol] || 0;
       const btc_bal = btcBals[item.btc] || 0;
 
+      const detail = {
+        phrase: item.phrase,
+        eth_address: item.eth, eth_balance: eth_bal,
+        bsc_address: item.eth, bsc_balance: bsc_bal,
+        btc_address: item.btc, btc_balance: btc_bal,
+        sol_address: item.sol, sol_balance: sol_bal,
+      };
+      scanned_items.push(detail);
+
       if (eth_bal > 0 || bsc_bal > 0 || sol_bal > 0 || btc_bal > 0) {
         foundWalletsCount++;
-        const record = {
-          phrase: item.phrase,
-          eth_address: item.eth, eth_balance: eth_bal,
-          bsc_address: item.eth, bsc_balance: bsc_bal,
-          btc_address: item.btc, btc_balance: btc_bal,
-          sol_address: item.sol, sol_balance: sol_bal,
-        };
-        newlyFound.push(record);
+        newlyFound.push(detail);
         try {
-          await supabaseAdmin.from('wallet_results').insert([record]);
+          await supabaseAdmin.from('wallet_results').insert([detail]);
         } catch {}
       }
     }
@@ -285,6 +307,7 @@ export async function POST(req: NextRequest) {
     try {
       await supabaseAdmin.from('scan_stats').upsert({
         id: 'main',
+        total_phrases: totalDbPhrases || newProcessed,
         processed: newProcessed,
         found_wallets: foundWalletsCount,
         is_running: true,
@@ -295,9 +318,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       processed: newProcessed,
+      total_phrases: totalDbPhrases || newProcessed,
       scanned_batch: phrasesToScan.length,
       found_in_batch: newlyFound.length,
-      total_found: foundWalletsCount
+      total_found: foundWalletsCount,
+      scanned_items
     });
 
   } catch (err: unknown) {
