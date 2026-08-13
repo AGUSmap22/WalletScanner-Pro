@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Wallet, TrendingUp, Search, RefreshCw, Copy, ExternalLink,
   Activity, Zap, Shield, CheckCircle, Coins, Play, Pause,
-  Terminal, Settings, Lock, Upload, Trash2, Key, ChevronDown, Check
+  Terminal, Settings, Upload, Trash2
 } from 'lucide-react';
 import type { WalletResult, ScanStats } from '@/lib/types';
 
@@ -147,12 +147,8 @@ export default function Dashboard() {
   const terminalEndRef = useRef<HTMLDivElement>(null);
   const isScanningRef = useRef(false);
 
-  // Modales y Auth
-  const [isLoggedIn, setIsLoggedIn] = useState(true); // admin activo por defecto
-  const [showAuthModal, setShowAuthModal] = useState(false);
+  // Modales
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [authError, setAuthError] = useState('');
   
   // Alimentador de Semillas
   const [seedText, setSeedText] = useState('');
@@ -190,7 +186,7 @@ export default function Dashboard() {
     }
   }, [consoleLogs, showConsole]);
 
-  // Loop de Escaneo Cloud en Vercel con emisión de logs en consola
+  // Loop de Escaneo Cloud en Vercel
   useEffect(() => {
     isScanningRef.current = isScanning;
     let active = true;
@@ -222,7 +218,7 @@ export default function Dashboard() {
                 timestamp: new Date().toLocaleTimeString()
               }));
 
-              setConsoleLogs(prev => [...prev.slice(-100), ...newItems]); // Mantener últimos 100 en memoria
+              setConsoleLogs(prev => [...prev.slice(-100), ...newItems]);
             }
             await fetchData();
           }
@@ -242,34 +238,67 @@ export default function Dashboard() {
     };
   }, [isScanning, fetchData]);
 
-  // Carga masiva de semillas a la base de datos Supabase
+  // Carga masiva de semillas en lotes (evita error Payload Too Large)
   const handleUploadSeeds = async () => {
     if (!seedText.trim()) return;
     setUploading(true);
-    setUploadStatus('Cargando semillas a la base de datos…');
+    setUploadStatus('Procesando y dividiendo lote de frases…');
+
     try {
-      const res = await fetch('/api/admin/seeds', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: seedText })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setUploadStatus(`✅ ${data.added} frases mnemónicas guardadas exitosamente en la base de datos (Total: ${data.total}).`);
-        setSeedText('');
-        fetchData();
-      } else {
-        setUploadStatus(`❌ Error: ${data.error}`);
+      const lines = seedText.split('\n').map(l => l.trim()).filter(Boolean);
+      const totalPhrases = lines.length;
+
+      if (totalPhrases === 0) {
+        setUploadStatus('❌ No hay frases válidas para subir.');
+        setUploading(false);
+        return;
       }
+
+      const chunkSize = 500; // Enviar en lotes seguros de 500 frases
+      let totalInserted = 0;
+      const totalChunks = Math.ceil(totalPhrases / chunkSize);
+
+      for (let i = 0; i < totalPhrases; i += chunkSize) {
+        const chunk = lines.slice(i, i + chunkSize);
+        const currentChunkNum = Math.floor(i / chunkSize) + 1;
+        const pct = Math.round(((i + chunk.length) / totalPhrases) * 100);
+
+        setUploadStatus(`Cargando lote ${currentChunkNum} de ${totalChunks} (${totalInserted}/${totalPhrases} frases - ${pct}%)…`);
+
+        const res = await fetch('/api/admin/seeds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phrases: chunk }),
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          let errMessage = 'Error del servidor';
+          try {
+            const errJson = JSON.parse(text);
+            errMessage = errJson.error || errMessage;
+          } catch {
+            if (text.includes('Too Large')) errMessage = 'Lote demasiado grande para Vercel';
+          }
+          throw new Error(errMessage);
+        }
+
+        const data = await res.json();
+        totalInserted += data.added || 0;
+      }
+
+      setUploadStatus(`✅ ${totalInserted.toLocaleString()} frases guardadas exitosamente en Supabase.`);
+      setSeedText('');
+      fetchData();
     } catch (e: any) {
-      setUploadStatus(`❌ Error de conexión: ${e.message}`);
+      setUploadStatus(`❌ Error: ${e.message}`);
     } finally {
       setUploading(false);
     }
   };
 
   const handleClearSeeds = async () => {
-    if (!confirm('¿Estás seguro de borrar todas las semillas guardadas de la base de datos?')) return;
+    if (!confirm('¿Estás seguro de borrar todas las semillas de la base de datos?')) return;
     setUploading(true);
     try {
       await fetch('/api/admin/seeds', { method: 'DELETE' });
@@ -337,7 +366,6 @@ export default function Dashboard() {
 
           {/* Controles de Acción */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {/* Botón Consola */}
             <button
               onClick={() => setShowConsole(!showConsole)}
               style={{
@@ -351,7 +379,6 @@ export default function Dashboard() {
               <Terminal size={14} /> Consola en Vivo
             </button>
 
-            {/* Configuración / Alimentador DB */}
             <button
               onClick={() => setShowSettingsModal(true)}
               style={{
@@ -361,10 +388,9 @@ export default function Dashboard() {
                 color: 'var(--text-primary)', border: '1px solid var(--border)'
               }}
             >
-              <Settings size={14} /> Base de Datos & Frases
+              <Settings size={14} /> Cargar Frases en DB
             </button>
 
-            {/* Iniciar Escaneo */}
             <button
               onClick={() => setIsScanning(!isScanning)}
               style={{
@@ -452,10 +478,9 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* ── Consola / Terminal en Vivo (.py Style) ── */}
+        {/* ── Consola / Terminal en Vivo ── */}
         {showConsole && (
           <div className="glass-card" style={{ marginBottom: 24, overflow: 'hidden', border: '1px solid rgba(59,130,246,0.3)' }}>
-            {/* Header consola */}
             <div style={{
               background: '#090a0f', padding: '10px 16px',
               borderBottom: '1px solid var(--border)',
@@ -467,17 +492,14 @@ export default function Dashboard() {
                   terminal@wallet-scanner:~# {isScanning ? 'escaneando_lotes...' : 'pausado'}
                 </span>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  onClick={() => setConsoleLogs([])}
-                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}
-                >
-                  Limpiar pantalla
-                </button>
-              </div>
+              <button
+                onClick={() => setConsoleLogs([])}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}
+              >
+                Limpiar pantalla
+              </button>
             </div>
 
-            {/* Cuerpo terminal */}
             <div style={{
               background: '#050608', color: '#00ff66',
               fontFamily: 'Consolas, Monaco, "Courier New", monospace',
@@ -584,7 +606,7 @@ export default function Dashboard() {
                 <Search size={32} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Sin resultados con saldo guardados</div>
                 <div style={{ fontSize: 12 }}>
-                  Alimenta frases mnemónicas en la pestaña <strong>Base de Datos & Frases</strong> y presiona <strong>⚡ Iniciar Escaneo</strong>.
+                  Alimenta frases mnemónicas en la pestaña <strong>Cargar Frases en DB</strong> y presiona <strong>⚡ Iniciar Escaneo</strong>.
                 </div>
               </div>
             ) : (
@@ -601,7 +623,7 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredWallets.map((w, i) => (
+                  {filteredWallets.map((w) => (
                     <tr key={w.id} className="wallet-table-row row-found">
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -662,7 +684,7 @@ export default function Dashboard() {
         </div>
       </main>
 
-      {/* ── Modal de Configuración & Carga de Semillas ── */}
+      {/* ── Modal de Configuración & Carga de Semillas por Lotes ── */}
       {showSettingsModal && (
         <div style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
@@ -683,7 +705,7 @@ export default function Dashboard() {
             </div>
 
             <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 16 }}>
-              Pega tus frases mnemónicas (una por línea) o sube tu archivo `.txt`. Se guardarán de forma persistente en la tabla <code>mnemonic_seeds</code> de tu Supabase.
+              Pega tus frases mnemónicas (una por línea). Se enviarán automáticamente en <strong>lotes optimizados de 500 frases</strong> a la tabla <code>mnemonic_seeds</code> de tu Supabase.
             </p>
 
             <textarea

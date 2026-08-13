@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import * as bip39 from 'bip39';
 
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const { count, error } = await supabaseAdmin
@@ -37,7 +40,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No se encontraron frases mnemónicas BIP39 válidas.' }, { status: 400 });
     }
 
-    // Insertar en lotes de 500 en Supabase
+    // Insertar en lotes en Supabase
     const batchSize = 500;
     let insertedCount = 0;
 
