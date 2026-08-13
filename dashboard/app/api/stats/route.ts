@@ -1,21 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 
-// POST /api/stats - update scan progress
+// GET /api/stats - fetch stats for dashboard
+export async function GET(req: NextRequest) {
+  try {
+    const userId = req.nextUrl.searchParams.get('userId') || 'public';
+    const role = req.nextUrl.searchParams.get('role') || 'user';
+
+    const statId = (role === 'admin') ? 'main' : (userId === 'public' ? 'main' : `stats_${userId}`);
+
+    const { data } = await supabaseAdmin
+      .from('scan_stats')
+      .select('*')
+      .eq('id', statId)
+      .single();
+
+    return NextResponse.json({ data: data || null });
+  } catch (err: unknown) {
+    return NextResponse.json({ data: null });
+  }
+}
+
+// POST /api/stats - update scan stats
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = req.headers.get('x-api-key');
-    if (apiKey !== process.env.SCANNER_API_KEY && process.env.SCANNER_API_KEY) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
     const body = await req.json();
-    const { total_phrases, processed, found_wallets, is_running } = body;
+    const { userId, total_phrases, processed, found_wallets, is_running } = body;
+    const statId = (!userId || userId === 'public') ? 'main' : `stats_${userId}`;
 
     const { data, error } = await supabaseAdmin
       .from('scan_stats')
       .upsert([{
-        id: 'main',
+        id: statId,
+        user_id: userId || 'public',
         total_phrases: total_phrases || 0,
         processed: processed || 0,
         found_wallets: found_wallets || 0,
@@ -30,26 +47,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, data });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Database error';
-    console.warn('POST /api/stats warning:', msg);
     return NextResponse.json({ error: msg }, { status: 500 });
-  }
-}
-
-// GET /api/stats - fetch scan progress
-export async function GET() {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('scan_stats')
-      .select('*')
-      .eq('id', 'main')
-      .single();
-
-    if (error && error.code !== 'PGRST116') throw error;
-
-    return NextResponse.json({ data: data || null });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Database error';
-    console.warn('GET /api/stats warning:', msg);
-    return NextResponse.json({ data: null, warning: 'Supabase no configurado o inalcanzable' });
   }
 }

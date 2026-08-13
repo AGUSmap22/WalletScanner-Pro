@@ -1,5 +1,7 @@
 export type WalletResult = {
   id: string;
+  user_id?: string;
+  user_email?: string;
   phrase: string;
   eth_address: string | null;
   eth_balance: number;
@@ -14,6 +16,7 @@ export type WalletResult = {
 
 export type ScanStats = {
   id: string;
+  user_id?: string;
   total_phrases: number;
   processed: number;
   found_wallets: number;

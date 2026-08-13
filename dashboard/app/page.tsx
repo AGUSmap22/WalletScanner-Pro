@@ -2,13 +2,17 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Wallet, TrendingUp, Search, RefreshCw, Copy, ExternalLink,
-  Activity, Zap, Shield, CheckCircle, Coins, Play, Pause,
-  Terminal, Settings, Upload, Trash2
+  Wallet, TrendingUp, Search, RefreshCw, Copy, CheckCircle,
+  Zap, Shield, Coins, Play, Pause, Terminal, Settings, Upload,
+  Trash2, LogIn, LogOut, UserPlus, ShieldAlert, UserCheck
 } from 'lucide-react';
 import type { WalletResult, ScanStats } from '@/lib/types';
 
-// ─── Utility Functions ────────────────────────────────────────────────────────
+interface AuthUser {
+  id: string;
+  email: string;
+  role: 'admin' | 'user';
+}
 
 function shortenAddress(addr: string | null): string {
   if (!addr) return '—';
@@ -44,8 +48,6 @@ interface ScannedLogItem {
   timestamp: string;
 }
 
-// ─── Componentes auxiliares ───────────────────────────────────────────────────
-
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = () => {
@@ -66,36 +68,21 @@ function CopyBtn({ text }: { text: string }) {
 }
 
 function StatCard({
-  icon: Icon,
-  label,
-  value,
-  sub,
-  color = 'var(--accent-blue)',
-  glow = false,
+  icon: Icon, label, value, sub, color = 'var(--accent-blue)', glow = false,
 }: {
-  icon: React.ElementType;
-  label: string;
-  value: string | number;
-  sub?: string;
-  color?: string;
-  glow?: boolean;
+  icon: React.ElementType; label: string; value: string | number; sub?: string; color?: string; glow?: boolean;
 }) {
   return (
     <div className="glass-card" style={{
-      padding: '20px 24px',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '12px',
+      padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '12px',
       boxShadow: glow ? `0 0 30px ${color}20` : undefined,
       borderColor: glow ? `${color}40` : undefined,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
         <div style={{
-          width: 36, height: 36, borderRadius: 10,
-          background: `${color}18`,
-          border: `1px solid ${color}30`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color,
+          width: 36, height: 36, borderRadius: 10, background: `${color}18`,
+          border: `1px solid ${color}30`, display: 'flex', alignItems: 'center',
+          justifyContent: 'center', color,
         }}>
           <Icon size={18} />
         </div>
@@ -130,48 +117,61 @@ function ProgressBar({ value, total }: { value: number; total: number }) {
   );
 }
 
-// ─── Dashboard Principal ──────────────────────────────────────────────────────
-
 export default function Dashboard() {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [wallets, setWallets] = useState<WalletResult[]>([]);
   const [stats, setStats] = useState<ScanStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lastRefresh, setLastRefresh] = useState(new Date());
   const [filter, setFilter] = useState<'all' | 'found'>('all');
   const [search, setSearch] = useState('');
   
-  // Estado del escáner y consola
+  // Escáner y consola
   const [isScanning, setIsScanning] = useState(false);
   const [consoleLogs, setConsoleLogs] = useState<ScannedLogItem[]>([]);
   const [showConsole, setShowConsole] = useState(true);
   const terminalEndRef = useRef<HTMLDivElement>(null);
   const isScanningRef = useRef(false);
 
-  // Modales
+  // Modales y Auth
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authError, setAuthError] = useState('');
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   
-  // Alimentador de Semillas
+  // Semillas
   const [seedText, setSeedText] = useState('');
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  // Cargar usuario guardado
+  useEffect(() => {
+    const saved = localStorage.getItem('wallet_scanner_user');
+    if (saved) {
+      try { setCurrentUser(JSON.parse(saved)); } catch {}
+    }
+  }, []);
+
   const fetchData = useCallback(async () => {
+    const uId = currentUser?.id || 'public';
+    const role = currentUser?.role || 'user';
+
     try {
       const [walletsRes, statsRes] = await Promise.all([
-        fetch('/api/wallets'),
-        fetch('/api/stats'),
+        fetch(`/api/wallets?userId=${uId}&role=${role}`),
+        fetch(`/api/stats?userId=${uId}&role=${role}`),
       ]);
       const walletsData = await walletsRes.json();
       const statsData = await statsRes.json();
       if (walletsData.data) setWallets(walletsData.data);
       if (statsData.data) setStats(statsData.data);
-      setLastRefresh(new Date());
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
     fetchData();
@@ -179,14 +179,45 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Scroll automático en consola
   useEffect(() => {
     if (showConsole && terminalEndRef.current) {
       terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [consoleLogs, showConsole]);
 
-  // Loop de Escaneo Cloud en Vercel
+  // Auth Submit
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: authMode,
+          email: emailInput,
+          password: passwordInput,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error al autenticar');
+
+      setCurrentUser(data.user);
+      localStorage.setItem('wallet_scanner_user', JSON.stringify(data.user));
+      setShowAuthModal(false);
+      setEmailInput('');
+      setPasswordInput('');
+    } catch (err: any) {
+      setAuthError(err.message);
+    }
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('wallet_scanner_user');
+  };
+
+  // Loop de Escaneo
   useEffect(() => {
     isScanningRef.current = isScanning;
     let active = true;
@@ -197,7 +228,11 @@ export default function Dashboard() {
           const res = await fetch('/api/scan-batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ batchSize: 10 }),
+            body: JSON.stringify({
+              batchSize: 10,
+              userId: currentUser?.id || 'public',
+              userEmail: currentUser?.email || 'anónimo'
+            }),
           });
 
           if (res.ok) {
@@ -233,12 +268,10 @@ export default function Dashboard() {
       runScanLoop();
     }
 
-    return () => {
-      active = false;
-    };
-  }, [isScanning, fetchData]);
+    return () => { active = false; };
+  }, [isScanning, currentUser, fetchData]);
 
-  // Carga masiva de semillas en lotes (evita error Payload Too Large)
+  // Carga masiva de semillas en lotes
   const handleUploadSeeds = async () => {
     if (!seedText.trim()) return;
     setUploading(true);
@@ -247,14 +280,9 @@ export default function Dashboard() {
     try {
       const lines = seedText.split('\n').map(l => l.trim()).filter(Boolean);
       const totalPhrases = lines.length;
+      if (totalPhrases === 0) return;
 
-      if (totalPhrases === 0) {
-        setUploadStatus('❌ No hay frases válidas para subir.');
-        setUploading(false);
-        return;
-      }
-
-      const chunkSize = 500; // Enviar en lotes seguros de 500 frases
+      const chunkSize = 500;
       let totalInserted = 0;
       const totalChunks = Math.ceil(totalPhrases / chunkSize);
 
@@ -268,26 +296,17 @@ export default function Dashboard() {
         const res = await fetch('/api/admin/seeds', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phrases: chunk }),
+          body: JSON.stringify({
+            phrases: chunk,
+            userId: currentUser?.id || 'public'
+          }),
         });
-
-        if (!res.ok) {
-          const text = await res.text();
-          let errMessage = 'Error del servidor';
-          try {
-            const errJson = JSON.parse(text);
-            errMessage = errJson.error || errMessage;
-          } catch {
-            if (text.includes('Too Large')) errMessage = 'Lote demasiado grande para Vercel';
-          }
-          throw new Error(errMessage);
-        }
 
         const data = await res.json();
         totalInserted += data.added || 0;
       }
 
-      setUploadStatus(`✅ ${totalInserted.toLocaleString()} frases guardadas exitosamente en Supabase.`);
+      setUploadStatus(`✅ ${totalInserted.toLocaleString()} frases mnemónicas guardadas en tu cuenta de Supabase.`);
       setSeedText('');
       fetchData();
     } catch (e: any) {
@@ -298,11 +317,12 @@ export default function Dashboard() {
   };
 
   const handleClearSeeds = async () => {
-    if (!confirm('¿Estás seguro de borrar todas las semillas de la base de datos?')) return;
+    if (!confirm('¿Estás seguro de borrar tus semillas personales de la base de datos?')) return;
     setUploading(true);
     try {
-      await fetch('/api/admin/seeds', { method: 'DELETE' });
-      setUploadStatus('🗑️ Base de datos de semillas limpiada correctamente.');
+      const uId = currentUser?.id || 'public';
+      await fetch(`/api/admin/seeds?userId=${uId}`, { method: 'DELETE' });
+      setUploadStatus('🗑️ Tus semillas han sido borradas correctamente.');
       fetchData();
     } catch (e: any) {
       setUploadStatus(`❌ Error: ${e.message}`);
@@ -346,7 +366,7 @@ export default function Dashboard() {
           padding: '0 24px', height: 64,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         }}>
-          {/* Logo */}
+          {/* Logo y Badge de Usuario */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{
               width: 38, height: 38, borderRadius: 10,
@@ -358,14 +378,55 @@ export default function Dashboard() {
             </div>
             <div>
               <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                WalletScanner Pro <span style={{ fontSize: 10, background: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent-green)', padding: '1px 6px', borderRadius: 4, border: '1px solid rgba(16, 185, 129, 0.3)' }}>Cloud & DB</span>
+                WalletScanner Pro
+                {currentUser ? (
+                  <span style={{
+                    fontSize: 10,
+                    background: currentUser.role === 'admin' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                    color: currentUser.role === 'admin' ? '#ef4444' : 'var(--accent-green)',
+                    padding: '2px 8px', borderRadius: 12, border: currentUser.role === 'admin' ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(16, 185, 129, 0.3)',
+                    fontWeight: 700, textTransform: 'uppercase'
+                  }}>
+                    {currentUser.role === 'admin' ? '👑 ADMIN GLOBAL' : `👤 ${currentUser.email}`}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 10, background: 'rgba(107, 114, 128, 0.2)', color: 'var(--text-muted)', padding: '2px 8px', borderRadius: 12 }}>
+                    PÚBLICO
+                  </span>
+                )}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Escaneo Multired en Vivo · ETH · BSC · BTC · SOL</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Escaneo Multired Cloud · ETH · BSC · BTC · SOL</div>
             </div>
           </div>
 
           {/* Controles de Acción */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {currentUser ? (
+              <button
+                onClick={handleLogout}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '7px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444',
+                  border: '1px solid rgba(239, 68, 68, 0.3)'
+                }}
+              >
+                <LogOut size={13} /> Salir
+              </button>
+            ) : (
+              <button
+                onClick={() => { setAuthMode('login'); setShowAuthModal(true); }}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700,
+                  cursor: 'pointer', background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-purple))',
+                  color: 'white', border: 'none'
+                }}
+              >
+                <LogIn size={13} /> Iniciar Sesión / Registro
+              </button>
+            )}
+
             <button
               onClick={() => setShowConsole(!showConsole)}
               style={{
@@ -376,7 +437,7 @@ export default function Dashboard() {
                 border: '1px solid var(--border)'
               }}
             >
-              <Terminal size={14} /> Consola en Vivo
+              <Terminal size={14} /> Consola
             </button>
 
             <button
@@ -388,7 +449,7 @@ export default function Dashboard() {
                 color: 'var(--text-primary)', border: '1px solid var(--border)'
               }}
             >
-              <Settings size={14} /> Cargar Frases en DB
+              <Settings size={14} /> Cargar Frases
             </button>
 
             <button
@@ -403,7 +464,7 @@ export default function Dashboard() {
                 boxShadow: isScanning ? undefined : '0 0 15px rgba(16, 185, 129, 0.3)'
               }}
             >
-              {isScanning ? <><Pause size={14} /> Pausar Escaneo</> : <><Play size={14} /> ⚡ Iniciar Escaneo Cloud</>}
+              {isScanning ? <><Pause size={14} /> Pausar</> : <><Play size={14} /> ⚡ Iniciar Escaneo</>}
             </button>
 
             <button onClick={fetchData} title="Refrescar" style={{
@@ -420,17 +481,33 @@ export default function Dashboard() {
       {/* ── Contenido Principal ── */}
       <main style={{ maxWidth: 1400, margin: '0 auto', padding: '24px' }}>
 
+        {/* ── Banner de Admin ── */}
+        {currentUser?.role === 'admin' && (
+          <div style={{
+            background: 'linear-gradient(90deg, rgba(239, 68, 68, 0.15), rgba(168, 85, 247, 0.15))',
+            border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: 12, padding: '12px 20px',
+            marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <ShieldAlert color="#ef4444" size={20} />
+              <div>
+                <strong style={{ fontSize: 13, color: '#ef4444' }}>Modo Administrador Activo</strong>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Estás viendo el global de todas las wallets y hallazgos encontrados por todos los usuarios del sistema.</div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── Tarjetas Estadísticas ── */}
         <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
           gap: 16, marginBottom: 24,
         }}>
           <StatCard
             icon={Search}
             label="Frases escaneadas"
             value={stats?.processed?.toLocaleString() ?? (loading ? '…' : '0')}
-            sub={`de ${stats?.total_phrases?.toLocaleString() ?? '?'} en Base de Datos`}
+            sub={`de ${stats?.total_phrases?.toLocaleString() ?? '?'} en tu Base de Datos`}
             color="var(--accent-blue)"
           />
           <StatCard
@@ -478,18 +555,17 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* ── Consola / Terminal en Vivo ── */}
+        {/* ── Consola / Terminal en Vivo (.py Style) ── */}
         {showConsole && (
           <div className="glass-card" style={{ marginBottom: 24, overflow: 'hidden', border: '1px solid rgba(59,130,246,0.3)' }}>
             <div style={{
-              background: '#090a0f', padding: '10px 16px',
-              borderBottom: '1px solid var(--border)',
+              background: '#090a0f', padding: '10px 16px', borderBottom: '1px solid var(--border)',
               display: 'flex', alignItems: 'center', justifyContent: 'space-between'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Terminal size={15} color="var(--accent-green)" />
                 <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent-green)', fontFamily: 'monospace' }}>
-                  terminal@wallet-scanner:~# {isScanning ? 'escaneando_lotes...' : 'pausado'}
+                  terminal@{currentUser?.email || 'public'}:~# {isScanning ? 'escaneando_lotes...' : 'pausado'}
                 </span>
               </div>
               <button
@@ -501,14 +577,12 @@ export default function Dashboard() {
             </div>
 
             <div style={{
-              background: '#050608', color: '#00ff66',
-              fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-              fontSize: 12, padding: '16px', height: 260, overflowY: 'auto',
-              lineHeight: 1.5
+              background: '#050608', color: '#00ff66', fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+              fontSize: 12, padding: '16px', height: 260, overflowY: 'auto', lineHeight: 1.5
             }}>
               {consoleLogs.length === 0 ? (
                 <div style={{ color: '#4a5568' }}>
-                  &gt; Presiona <strong style={{ color: '#00ff66' }}>⚡ Iniciar Escaneo Cloud</strong> arriba para comenzar a transmitir los logs en vivo…
+                  &gt; Presiona <strong style={{ color: '#00ff66' }}>⚡ Iniciar Escaneo</strong> arriba para comenzar a transmitir los logs en vivo…
                 </div>
               ) : (
                 consoleLogs.map((log) => (
@@ -539,18 +613,18 @@ export default function Dashboard() {
         {/* ── Tabla de Resultados de Supabase ── */}
         <div className="glass-card" style={{ overflow: 'hidden' }}>
           <div style={{
-            padding: '16px 20px',
-            borderBottom: '1px solid var(--border)',
+            padding: '16px 20px', borderBottom: '1px solid var(--border)',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             flexWrap: 'wrap', gap: 12,
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <Wallet size={16} color="var(--accent-blue)" />
-              <span style={{ fontWeight: 700, fontSize: 14 }}>Resultados Guardados en Base de Datos</span>
+              <span style={{ fontWeight: 700, fontSize: 14 }}>
+                {currentUser?.role === 'admin' ? 'Hallazgos de Todos los Usuarios (Admin)' : 'Mis Wallets Encontradas'}
+              </span>
               <span style={{
                 background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)',
-                borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 600,
-                color: 'var(--accent-blue)',
+                borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 600, color: 'var(--accent-blue)',
               }}>
                 {filteredWallets.length}
               </span>
@@ -564,10 +638,8 @@ export default function Dashboard() {
               }}>
                 <Search size={13} color="var(--text-muted)" />
                 <input
-                  type="text"
-                  placeholder="Buscar dirección o frase…"
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
+                  type="text" placeholder="Buscar dirección o frase…"
+                  value={search} onChange={e => setSearch(e.target.value)}
                   style={{
                     background: 'none', border: 'none', outline: 'none',
                     color: 'var(--text-primary)', fontSize: 13, width: 220,
@@ -578,8 +650,7 @@ export default function Dashboard() {
               <div style={{ display: 'flex', gap: 6 }}>
                 {(['all', 'found'] as const).map(f => (
                   <button
-                    key={f}
-                    onClick={() => setFilter(f)}
+                    key={f} onClick={() => setFilter(f)}
                     style={{
                       padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
                       cursor: 'pointer', transition: 'all 0.2s',
@@ -599,20 +670,21 @@ export default function Dashboard() {
             {loading ? (
               <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
                 <RefreshCw size={24} className="animate-spin-slow" style={{ margin: '0 auto 12px' }} />
-                <div style={{ fontSize: 13 }}>Cargando datos…</div>
+                <div style={{ fontSize: 13 }}>Cargando datos de Supabase…</div>
               </div>
             ) : filteredWallets.length === 0 ? (
               <div style={{ padding: 60, textAlign: 'center', color: 'var(--text-muted)' }}>
                 <Search size={32} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Sin resultados con saldo guardados</div>
                 <div style={{ fontSize: 12 }}>
-                  Alimenta frases mnemónicas en la pestaña <strong>Cargar Frases en DB</strong> y presiona <strong>⚡ Iniciar Escaneo</strong>.
+                  Alimenta tus frases mnemónicas personales en <strong>Cargar Frases</strong> y presiona <strong>⚡ Iniciar Escaneo</strong>.
                 </div>
               </div>
             ) : (
               <table className="wallet-table">
                 <thead>
                   <tr>
+                    {currentUser?.role === 'admin' && <th>Usuario</th>}
                     <th>Frase semilla</th>
                     <th>ETH</th>
                     <th>BSC (BNB)</th>
@@ -625,9 +697,16 @@ export default function Dashboard() {
                 <tbody>
                   {filteredWallets.map((w) => (
                     <tr key={w.id} className="wallet-table-row row-found">
+                      {currentUser?.role === 'admin' && (
+                        <td>
+                          <span style={{ fontSize: 11, background: 'rgba(59,130,246,0.1)', color: 'var(--accent-blue)', padding: '2px 6px', borderRadius: 4, fontWeight: 600 }}>
+                            {w.user_email || 'anónimo'}
+                          </span>
+                        </td>
+                      )}
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span className="mono" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 }}>
+                          <span className="mono" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 }}>
                             {w.phrase}
                           </span>
                           <CopyBtn text={w.phrase} />
@@ -684,28 +763,103 @@ export default function Dashboard() {
         </div>
       </main>
 
+      {/* ── Modal de Autenticación (Login / Registro) ── */}
+      {showAuthModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)',
+          zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20
+        }}>
+          <div className="glass-card" style={{ maxWidth: 420, width: '100%', padding: 28, background: 'var(--bg-secondary)' }}>
+            <div style={{ textAlign: 'center', marginBottom: 24 }}>
+              <div style={{
+                width: 48, height: 48, borderRadius: 14, margin: '0 auto 12px',
+                background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-purple))',
+                display: 'flex', alignItems: 'center', justifyContent: 'center'
+              }}>
+                <UserCheck size={24} color="white" />
+              </div>
+              <h3 style={{ margin: 0, fontSize: 20 }}>{authMode === 'login' ? 'Iniciar Sesión' : 'Crear Cuenta'}</h3>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                {authMode === 'login' ? 'Accede a tu panel personal de frases y resultados' : 'El primer usuario registrado se convierte automáticamente en ADMIN'}
+              </p>
+            </div>
+
+            <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Correo Electrónico</label>
+                <input
+                  type="email" required placeholder="tu@email.com"
+                  value={emailInput} onChange={e => setEmailInput(e.target.value)}
+                  style={{
+                    width: '100%', background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                    borderRadius: 8, padding: '10px 14px', color: 'var(--text-primary)', outline: 'none'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Contraseña</label>
+                <input
+                  type="password" required placeholder="••••••••"
+                  value={passwordInput} onChange={e => setPasswordInput(e.target.value)}
+                  style={{
+                    width: '100%', background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                    borderRadius: 8, padding: '10px 14px', color: 'var(--text-primary)', outline: 'none'
+                  }}
+                />
+              </div>
+
+              {authError && (
+                <div style={{ fontSize: 12, color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)', padding: 10, borderRadius: 6, border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                  ❌ {authError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                style={{
+                  padding: 12, borderRadius: 8, border: 'none', fontWeight: 700, fontSize: 14, cursor: 'pointer',
+                  background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-green))', color: 'white', marginTop: 6
+                }}
+              >
+                {authMode === 'login' ? 'Entrar al Dashboard' : 'Registrarse como Usuario'}
+              </button>
+            </form>
+
+            <div style={{ textAlign: 'center', marginTop: 20, fontSize: 12, color: 'var(--text-muted)' }}>
+              {authMode === 'login' ? (
+                <>¿No tienes cuenta? <button onClick={() => { setAuthMode('register'); setAuthError(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent-blue)', cursor: 'pointer', fontWeight: 600 }}>Regístrate aquí</button></>
+              ) : (
+                <>¿Ya tienes cuenta? <button onClick={() => { setAuthMode('login'); setAuthError(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent-blue)', cursor: 'pointer', fontWeight: 600 }}>Inicia sesión</button></>
+              )}
+            </div>
+
+            <button onClick={() => setShowAuthModal(false)} style={{ width: '100%', marginTop: 16, background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Modal de Configuración & Carga de Semillas por Lotes ── */}
       {showSettingsModal && (
         <div style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
           background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)',
-          zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: 20
+          zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20
         }}>
-          <div className="glass-card" style={{
-            maxWidth: 650, width: '100%', padding: 28,
-            background: 'var(--bg-secondary)', border: '1px solid var(--border)'
-          }}>
+          <div className="glass-card" style={{ maxWidth: 650, width: '100%', padding: 28, background: 'var(--bg-secondary)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Settings size={20} color="var(--accent-blue)" />
-                <h3 style={{ margin: 0, fontSize: 18 }}>Alimentador de Frases en la Base de Datos</h3>
+                <h3 style={{ margin: 0, fontSize: 18 }}>Cargar Frases Semilla Personales</h3>
               </div>
               <button onClick={() => setShowSettingsModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}>✕</button>
             </div>
 
             <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 16 }}>
-              Pega tus frases mnemónicas (una por línea). Se enviarán automáticamente en <strong>lotes optimizados de 500 frases</strong> a la tabla <code>mnemonic_seeds</code> de tu Supabase.
+              Pega tus frases mnemónicas (una por línea). Se guardarán ligadas a tu cuenta (<code>{currentUser?.email || 'público'}</code>) en Supabase.
             </p>
 
             <textarea
@@ -741,7 +895,7 @@ export default function Dashboard() {
                   cursor: 'pointer', fontSize: 12, fontWeight: 600
                 }}
               >
-                <Trash2 size={14} /> Limpiar Base de Datos
+                <Trash2 size={14} /> Borrar Mis Semillas
               </button>
 
               <div style={{ display: 'flex', gap: 10 }}>

