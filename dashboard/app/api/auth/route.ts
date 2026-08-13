@@ -22,34 +22,29 @@ export async function POST(req: NextRequest) {
     const passHash = hashPassword(password);
 
     if (action === 'register') {
-      // 1. Verificar si ya existe el usuario
-      const { data: existing, error: checkError } = await supabaseAdmin
-        .from('user_profiles')
-        .select('*')
-        .eq('email', cleanEmail)
-        .maybeSingle();
+      // Intentar insertar directamente (más simple y eficiente)
+      const userId = 'usr_' + crypto.randomBytes(8).toString('hex');
 
-      if (checkError) {
-        if (checkError.message?.includes('does not exist') || checkError.code === '42P01') {
+      // Contar usuarios existentes para asignar admin al primero
+      let role = 'user';
+      try {
+        const { count } = await supabaseAdmin
+          .from('user_profiles')
+          .select('*', { count: 'exact', head: true });
+
+        const isFirst = (count || 0) === 0;
+        role = (isFirst || cleanEmail.includes('admin')) ? 'admin' : 'user';
+      } catch (countErr: unknown) {
+        // Si falla el count, probablemente la tabla no existe
+        const msg = countErr instanceof Error ? countErr.message : String(countErr);
+        if (msg.includes('does not exist') || msg.includes('42P01') || msg.includes('relation')) {
           return NextResponse.json({
-            error: 'Falta crear la tabla "user_profiles" en Supabase. Ejecuta el código SQL en tu panel de Supabase.'
+            error: '⚠️ La tabla "user_profiles" no existe en tu Supabase. Ejecuta el SQL del archivo supabase_schema.sql en tu panel de Supabase.'
           }, { status: 500 });
         }
-        throw checkError;
+        // Si no es error de tabla, el primer usuario será admin por defecto
+        role = 'admin';
       }
-
-      if (existing) {
-        return NextResponse.json({ error: 'Este correo electrónico ya está registrado.' }, { status: 400 });
-      }
-
-      // 2. Contar usuarios existentes para hacer ADMIN al primero
-      const { count } = await supabaseAdmin
-        .from('user_profiles')
-        .select('*', { count: 'exact', head: true });
-
-      const isFirst = (count || 0) === 0;
-      const role = (isFirst || cleanEmail.includes('admin')) ? 'admin' : 'user';
-      const userId = 'usr_' + crypto.randomBytes(8).toString('hex');
 
       const { data: newUser, error: insertError } = await supabaseAdmin
         .from('user_profiles')
@@ -63,13 +58,18 @@ export async function POST(req: NextRequest) {
         .single();
 
       if (insertError) {
-        throw insertError;
+        if (insertError.message?.includes('duplicate') || insertError.code === '23505') {
+          return NextResponse.json({ error: 'Este correo ya está registrado. Inicia sesión.' }, { status: 400 });
+        }
+        if (insertError.message?.includes('does not exist') || insertError.code === '42P01') {
+          return NextResponse.json({
+            error: '⚠️ La tabla "user_profiles" no existe. Ejecuta el SQL en tu panel de Supabase.'
+          }, { status: 500 });
+        }
+        return NextResponse.json({ error: `Error al registrar: ${insertError.message}` }, { status: 500 });
       }
 
-      return NextResponse.json({
-        success: true,
-        user: newUser
-      });
+      return NextResponse.json({ success: true, user: newUser });
     }
 
     if (action === 'login') {
@@ -82,10 +82,10 @@ export async function POST(req: NextRequest) {
       if (fetchError) {
         if (fetchError.message?.includes('does not exist') || fetchError.code === '42P01') {
           return NextResponse.json({
-            error: 'Falta crear la tabla "user_profiles" en Supabase. Ejecuta el código SQL en tu panel de Supabase.'
+            error: '⚠️ La tabla "user_profiles" no existe. Ejecuta el SQL en tu panel de Supabase.'
           }, { status: 500 });
         }
-        throw fetchError;
+        return NextResponse.json({ error: `Error de base de datos: ${fetchError.message}` }, { status: 500 });
       }
 
       if (!user || user.password_hash !== passHash) {
@@ -94,19 +94,15 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        user: {
-          id: user.id,
-          email: user.email,
-          role: user.role
-        }
+        user: { id: user.id, email: user.email, role: user.role }
       });
     }
 
     return NextResponse.json({ error: 'Acción no válida' }, { status: 400 });
 
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Error de autenticación';
-    console.error('Auth error:', err);
+    const message = err instanceof Error ? err.message : 'Error desconocido';
+    console.error('[Auth Error]', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
