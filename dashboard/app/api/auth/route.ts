@@ -22,18 +22,27 @@ export async function POST(req: NextRequest) {
     const passHash = hashPassword(password);
 
     if (action === 'register') {
-      // Verificar si ya existe
-      const { data: existing } = await supabaseAdmin
+      // 1. Verificar si ya existe el usuario
+      const { data: existing, error: checkError } = await supabaseAdmin
         .from('user_profiles')
         .select('*')
         .eq('email', cleanEmail)
-        .single();
+        .maybeSingle();
 
-      if (existing) {
-        return NextResponse.json({ error: 'Este email ya está registrado' }, { status: 400 });
+      if (checkError) {
+        if (checkError.message?.includes('does not exist') || checkError.code === '42P01') {
+          return NextResponse.json({
+            error: 'Falta crear la tabla "user_profiles" en Supabase. Ejecuta el código SQL en tu panel de Supabase.'
+          }, { status: 500 });
+        }
+        throw checkError;
       }
 
-      // Verificar cuántos usuarios existen para asignar admin al primero
+      if (existing) {
+        return NextResponse.json({ error: 'Este correo electrónico ya está registrado.' }, { status: 400 });
+      }
+
+      // 2. Contar usuarios existentes para hacer ADMIN al primero
       const { count } = await supabaseAdmin
         .from('user_profiles')
         .select('*', { count: 'exact', head: true });
@@ -42,7 +51,7 @@ export async function POST(req: NextRequest) {
       const role = (isFirst || cleanEmail.includes('admin')) ? 'admin' : 'user';
       const userId = 'usr_' + crypto.randomBytes(8).toString('hex');
 
-      const { data: newUser, error } = await supabaseAdmin
+      const { data: newUser, error: insertError } = await supabaseAdmin
         .from('user_profiles')
         .insert([{
           id: userId,
@@ -53,7 +62,9 @@ export async function POST(req: NextRequest) {
         .select('id, email, role, created_at')
         .single();
 
-      if (error) throw error;
+      if (insertError) {
+        throw insertError;
+      }
 
       return NextResponse.json({
         success: true,
@@ -62,14 +73,23 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'login') {
-      const { data: user, error } = await supabaseAdmin
+      const { data: user, error: fetchError } = await supabaseAdmin
         .from('user_profiles')
         .select('id, email, role, password_hash')
         .eq('email', cleanEmail)
-        .single();
+        .maybeSingle();
 
-      if (error || !user || user.password_hash !== passHash) {
-        return NextResponse.json({ error: 'Credenciales incorrectas' }, { status: 401 });
+      if (fetchError) {
+        if (fetchError.message?.includes('does not exist') || fetchError.code === '42P01') {
+          return NextResponse.json({
+            error: 'Falta crear la tabla "user_profiles" en Supabase. Ejecuta el código SQL en tu panel de Supabase.'
+          }, { status: 500 });
+        }
+        throw fetchError;
+      }
+
+      if (!user || user.password_hash !== passHash) {
+        return NextResponse.json({ error: 'Correo o contraseña incorrectos.' }, { status: 401 });
       }
 
       return NextResponse.json({
@@ -86,6 +106,7 @@ export async function POST(req: NextRequest) {
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Error de autenticación';
+    console.error('Auth error:', err);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
