@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 
-// POST /api/wallets - called by the Python scanner when a wallet with balance is found
+// POST /api/wallets - called by scanner when a wallet with balance is found
 export async function POST(req: NextRequest) {
   try {
-    // Validate API key from the Python script
     const apiKey = req.headers.get('x-api-key');
-    if (apiKey !== process.env.SCANNER_API_KEY) {
+    if (apiKey !== process.env.SCANNER_API_KEY && process.env.SCANNER_API_KEY) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -45,9 +44,10 @@ export async function POST(req: NextRequest) {
     if (error) throw error;
 
     return NextResponse.json({ success: true, data });
-  } catch (err) {
-    console.error('POST /api/wallets error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Database unavailable';
+    console.warn('POST /api/wallets warning:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 
@@ -62,9 +62,10 @@ export async function GET() {
 
     if (error) throw error;
 
-    return NextResponse.json({ data });
-  } catch (err) {
-    console.error('GET /api/wallets error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ data: data || [] });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Database error';
+    console.warn('GET /api/wallets warning:', msg);
+    return NextResponse.json({ data: [], warning: 'Supabase no configurado o inalcanzable' });
   }
 }
