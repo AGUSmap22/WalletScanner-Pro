@@ -1,0 +1,30 @@
+# ── Next.js ──────────────────────────────────────────────────
+.next/
+out/
+build/
+dist/
+
+# ── Dependencias ──────────────────────────────────────────────
+node_modules/
+
+# ── Variables de entorno (NUNCA subir al repo) ────────────────
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ── Vercel ────────────────────────────────────────────────────
+.vercel/
+
+# ── OS / Editor ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# ── TypeScript ────────────────────────────────────────────────
+*.tsbuildinfo
+next-env.d.ts

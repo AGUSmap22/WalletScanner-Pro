@@ -1,0 +1,21 @@
+# Next.js / Dashboard
+dashboard/.next/
+dashboard/node_modules/
+dashboard/.env.local
+dashboard/.env
+.env
+.env.local
+
+# Python / Local artifacts
+__pycache__/
+*.pyc
+*.tmp
+.venv/
+venv/
+env/
+
+# Data & Checkpoints (mantén tus semillas y checkpoints en tu PC local, no en GitHub público)
+seeds_200k.txt
+32312321.txt
+ultima_posicion*.txt
+wallets_con_saldo*.txt
