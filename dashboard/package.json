@@ -9,8 +9,15 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@scure/bip32": "^2.3.0",
+    "@scure/bip39": "^2.3.0",
+    "@solana/web3.js": "^1.98.4",
     "@supabase/supabase-js": "^2.109.0",
+    "bip39": "^3.1.0",
+    "ed25519-hd-key": "^2.0.0",
+    "ethers": "^6.17.0",
     "lucide-react": "^1.31.0",
+    "micro-btc-signer": "^0.4.2",
     "next": "16.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

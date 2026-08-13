@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Wallet, TrendingUp, Search, RefreshCw, Copy, ExternalLink,
-  Activity, Zap, Shield, Clock, CheckCircle, Coins
+  Activity, Zap, Shield, Clock, CheckCircle, Coins, Play, Pause
 } from 'lucide-react';
 import type { WalletResult, ScanStats } from '@/lib/types';
 
@@ -261,6 +261,8 @@ export default function Dashboard() {
   const [lastRefresh, setLastRefresh] = useState(new Date());
   const [filter, setFilter] = useState<'all' | 'found'>('all');
   const [search, setSearch] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
+  const isScanningRef = useRef(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -282,9 +284,41 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000); // auto-refresh every 5s
+    const interval = setInterval(fetchData, 4000); // auto-refresh every 4s
     return () => clearInterval(interval);
   }, [fetchData]);
+
+  // Loop de escaneo cloud en Vercel
+  useEffect(() => {
+    isScanningRef.current = isScanning;
+    let active = true;
+
+    async function runScanLoop() {
+      while (active && isScanningRef.current) {
+        try {
+          const res = await fetch('/api/scan-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ batchSize: 20 }),
+          });
+          if (res.ok) {
+            await fetchData();
+          }
+        } catch (err) {
+          console.error('Scan loop error:', err);
+        }
+        await new Promise(r => setTimeout(r, 1200));
+      }
+    }
+
+    if (isScanning) {
+      runScanLoop();
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [isScanning, fetchData]);
 
   const filteredWallets = wallets
     .filter(w => filter === 'all' || (w.eth_balance || 0) > 0 || (w.bsc_balance || 0) > 0 || (w.btc_balance || 0) > 0 || (w.sol_balance || 0) > 0)
@@ -318,33 +352,47 @@ export default function Dashboard() {
       }}>
         <div style={{
           maxWidth: 1400, margin: '0 auto',
-          padding: '0 24px', height: 60,
+          padding: '0 24px', height: 64,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         }}>
           {/* Logo */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{
-              width: 36, height: 36, borderRadius: 10,
+              width: 38, height: 38, borderRadius: 10,
               background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-purple))',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 0 20px rgba(59,130,246,0.3)'
             }}>
-              <Wallet size={18} color="white" />
+              <Wallet size={20} color="white" />
             </div>
             <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>WalletScanner Pro</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ETH · BSC · BTC · SOL · Live Dashboard</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>WalletScanner Cloud</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ETH · BSC · BTC · SOL · Vercel Engine</div>
             </div>
           </div>
 
-          {/* Status */}
+          {/* Controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Actualizado {timeAgo(lastRefresh.toISOString())}
-            </span>
-            {stats?.is_running ? (
+            {/* Botón de inicio del escáner en la nube */}
+            <button
+              onClick={() => setIsScanning(!isScanning)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                cursor: 'pointer', transition: 'all 0.2s',
+                background: isScanning ? 'rgba(239, 68, 68, 0.15)' : 'linear-gradient(135deg, var(--accent-blue), var(--accent-green))',
+                color: isScanning ? '#ef4444' : 'white',
+                border: isScanning ? '1px solid rgba(239, 68, 68, 0.3)' : 'none',
+                boxShadow: isScanning ? undefined : '0 0 15px rgba(16, 185, 129, 0.3)'
+              }}
+            >
+              {isScanning ? <><Pause size={14} /> Pausar Escaneo Cloud</> : <><Play size={14} /> ⚡ Iniciar Escaneo en Vercel</>}
+            </button>
+
+            {isScanning || stats?.is_running ? (
               <span className="live-badge">
                 <span className="live-dot" />
-                Escaneando
+                Escaneando Cloud
               </span>
             ) : (
               <span style={{
@@ -355,12 +403,12 @@ export default function Dashboard() {
                 border: '1px solid rgba(74, 85, 104, 0.2)',
                 borderRadius: 20, padding: '4px 10px',
               }}>
-                <Activity size={10} /> Detenido
+                <Activity size={10} /> Pausado
               </span>
             )}
             <button onClick={fetchData} title="Refrescar" style={{
               background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)',
-              borderRadius: 8, padding: '6px 8px', cursor: 'pointer',
+              borderRadius: 8, padding: '8px 10px', cursor: 'pointer',
               color: 'var(--accent-blue)', display: 'flex', alignItems: 'center',
               transition: 'background 0.2s',
             }}>
@@ -442,7 +490,7 @@ export default function Dashboard() {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <Wallet size={16} color="var(--accent-blue)" />
-              <span style={{ fontWeight: 700, fontSize: 14 }}>Resultados</span>
+              <span style={{ fontWeight: 700, fontSize: 14 }}>Resultados con Saldo</span>
               <span style={{
                 background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)',
                 borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 600,
@@ -508,9 +556,7 @@ export default function Dashboard() {
                   {filter === 'found' ? 'Aún no se han encontrado wallets con saldo' : 'Sin resultados'}
                 </div>
                 <div style={{ fontSize: 12 }}>
-                  {filter === 'found'
-                    ? 'El scanner está trabajando. Los resultados aparecerán aquí en tiempo real.'
-                    : 'Inicia el script de Python para comenzar el escaneo.'}
+                  Haz clic en <strong>⚡ Iniciar Escaneo en Vercel</strong> arriba para arrancar el procesamiento cloud en la nube.
                 </div>
               </div>
             ) : (
@@ -543,7 +589,7 @@ export default function Dashboard() {
               display: 'flex', justifyContent: 'space-between',
             }}>
               <span>Mostrando {filteredWallets.length} de {wallets.length} resultados</span>
-              <span>Auto-refresh cada 5s · <span style={{ color: 'var(--accent-green)' }}>●</span> Activo</span>
+              <span>Cloud Vercel Engine · <span style={{ color: 'var(--accent-green)' }}>●</span> {isScanning ? 'Procesando Nube' : 'Pausado'}</span>
             </div>
           )}
         </div>
