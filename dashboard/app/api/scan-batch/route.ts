@@ -188,42 +188,50 @@ async function checkBtcBatch(addresses: string[]): Promise<Record<string, number
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const batchSize = Math.min(body.batchSize || 25, 50);
+    const batchSize = Math.min(body.batchSize || 15, 30);
     const customPhrases: string[] = body.phrases || [];
 
-    // Cargar estadísticas actuales de Supabase
-    const { data: stats } = await supabaseAdmin.from('scan_stats').select('*').eq('id', 'main').single();
-    let currentIdx = Number(stats?.processed || 0);
-    let foundWalletsCount = Number(stats?.found_wallets || 0);
+    // Cargar estadísticas actuales de Supabase (con try/catch seguro)
+    let currentIdx = 0;
+    let foundWalletsCount = 0;
+
+    try {
+      const { data: stats } = await supabaseAdmin.from('scan_stats').select('*').eq('id', 'main').single();
+      if (stats) {
+        currentIdx = Number(stats.processed || 0);
+        foundWalletsCount = Number(stats.found_wallets || 0);
+      }
+    } catch {}
 
     let phrasesToScan: string[] = [];
 
     if (customPhrases.length > 0) {
       phrasesToScan = customPhrases.slice(0, batchSize);
     } else {
-      // Buscar semillas en seeds_200k.txt
+      // 1. Intentar leer desde seeds_200k.txt en el proyecto
       const seedFilePath = path.join(process.cwd(), 'seeds_200k.txt');
-      if (fs.existsSync(seedFilePath)) {
-        const fileContent = fs.readFileSync(seedFilePath, 'utf-8');
-        const lines = fileContent.split('\n').map(l => l.trim()).filter(Boolean);
-        const totalPhrases = lines.length;
-        if (currentIdx >= totalPhrases) {
-          currentIdx = 0; // Reiniciar ciclo si llega al final
-        }
-        phrasesToScan = lines.slice(currentIdx, currentIdx + batchSize);
+      const publicSeedPath = path.join(process.cwd(), 'public', 'seeds_200k.txt');
+      const targetPath = fs.existsSync(seedFilePath) ? seedFilePath : (fs.existsSync(publicSeedPath) ? publicSeedPath : null);
 
-        await supabaseAdmin.from('scan_stats').upsert({
-          id: 'main',
-          total_phrases: totalPhrases,
-          processed: currentIdx,
-          is_running: true,
-          updated_at: new Date().toISOString()
-        });
+      if (targetPath) {
+        try {
+          const fileContent = fs.readFileSync(targetPath, 'utf-8');
+          const lines = fileContent.split('\n').map(l => l.trim()).filter(Boolean);
+          if (lines.length > 0) {
+            if (currentIdx >= lines.length) {
+              currentIdx = 0;
+            }
+            phrasesToScan = lines.slice(currentIdx, currentIdx + batchSize);
+          }
+        } catch {}
       }
-    }
 
-    if (phrasesToScan.length === 0) {
-      return NextResponse.json({ error: 'No hay frases mnemónicas disponibles' }, { status: 400 });
+      // 2. Generador aleatorio BIP-39 continuo si no hay archivo de semillas
+      if (phrasesToScan.length === 0) {
+        for (let i = 0; i < batchSize; i++) {
+          phrasesToScan.push(bip39.generateMnemonic());
+        }
+      }
     }
 
     // Derivar direcciones
@@ -267,18 +275,22 @@ export async function POST(req: NextRequest) {
           sol_address: item.sol, sol_balance: sol_bal,
         };
         newlyFound.push(record);
-        await supabaseAdmin.from('wallet_results').insert([record]);
+        try {
+          await supabaseAdmin.from('wallet_results').insert([record]);
+        } catch {}
       }
     }
 
     const newProcessed = currentIdx + phrasesToScan.length;
-    await supabaseAdmin.from('scan_stats').upsert({
-      id: 'main',
-      processed: newProcessed,
-      found_wallets: foundWalletsCount,
-      is_running: true,
-      updated_at: new Date().toISOString()
-    });
+    try {
+      await supabaseAdmin.from('scan_stats').upsert({
+        id: 'main',
+        processed: newProcessed,
+        found_wallets: foundWalletsCount,
+        is_running: true,
+        updated_at: new Date().toISOString()
+      });
+    } catch {}
 
     return NextResponse.json({
       success: true,
