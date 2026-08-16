@@ -9,13 +9,29 @@ export async function GET(req: NextRequest) {
 
     const statId = (role === 'admin') ? 'main' : (userId === 'public' ? 'main' : `stats_${userId}`);
 
-    const { data } = await supabaseAdmin
-      .from('scan_stats')
-      .select('*')
-      .eq('id', statId)
-      .single();
+    // Consultas en paralelo: stats guardados + conteo real de semillas
+    const [statsResult, seedCountResult] = await Promise.all([
+      supabaseAdmin.from('scan_stats').select('*').eq('id', statId).maybeSingle(),
+      role === 'admin'
+        ? supabaseAdmin.from('mnemonic_seeds').select('id', { count: 'exact', head: true })
+        : supabaseAdmin.from('mnemonic_seeds').select('id', { count: 'exact', head: true }).eq('user_id', userId),
+    ]);
 
-    return NextResponse.json({ data: data || null });
+    const realSeedCount = seedCountResult.count ?? 0;
+    const stats = statsResult.data;
+
+    // Fusionar: priorizar el conteo real de semillas sobre el valor en scan_stats
+    const enriched = stats
+      ? { ...stats, total_phrases: realSeedCount || stats.total_phrases || 0 }
+      : {
+          id: statId,
+          processed: 0,
+          found_wallets: 0,
+          total_phrases: realSeedCount,
+          is_running: false,
+        };
+
+    return NextResponse.json({ data: enriched });
   } catch (err: unknown) {
     return NextResponse.json({ data: null });
   }

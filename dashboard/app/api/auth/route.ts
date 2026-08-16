@@ -9,62 +9,39 @@ function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(password + 'wallet_scanner_salt_2026').digest('hex');
 }
 
+async function verifyAdmin(adminId: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from('user_profiles')
+    .select('role')
+    .eq('id', adminId)
+    .maybeSingle();
+  return data?.role === 'admin';
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { action, email, password } = body;
+    const { action, email, password, adminId, targetUserId, newRole } = body;
 
-    if (!email || !password) {
-      return NextResponse.json({ error: 'Email y contraseña requeridos' }, { status: 400 });
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-    const passHash = hashPassword(password);
-
+    // ─── REGISTRO ────────────────────────────────────────────────────────────
     if (action === 'register') {
-      // Intentar insertar directamente (más simple y eficiente)
+      if (!email || !password) {
+        return NextResponse.json({ error: 'Email y contraseña requeridos' }, { status: 400 });
+      }
+      const cleanEmail = email.trim().toLowerCase();
+      const passHash = hashPassword(password);
       const userId = 'usr_' + crypto.randomBytes(8).toString('hex');
 
-      // Contar usuarios existentes para asignar admin al primero
-      let role = 'user';
-      try {
-        const { count } = await supabaseAdmin
-          .from('user_profiles')
-          .select('*', { count: 'exact', head: true });
-
-        const isFirst = (count || 0) === 0;
-        role = (isFirst || cleanEmail.includes('admin')) ? 'admin' : 'user';
-      } catch (countErr: unknown) {
-        // Si falla el count, probablemente la tabla no existe
-        const msg = countErr instanceof Error ? countErr.message : String(countErr);
-        if (msg.includes('does not exist') || msg.includes('42P01') || msg.includes('relation')) {
-          return NextResponse.json({
-            error: '⚠️ La tabla "user_profiles" no existe en tu Supabase. Ejecuta el SQL del archivo supabase_schema.sql en tu panel de Supabase.'
-          }, { status: 500 });
-        }
-        // Si no es error de tabla, el primer usuario será admin por defecto
-        role = 'admin';
-      }
-
+      // Registros públicos SIEMPRE son 'user'. Nunca admin.
       const { data: newUser, error: insertError } = await supabaseAdmin
         .from('user_profiles')
-        .insert([{
-          id: userId,
-          email: cleanEmail,
-          password_hash: passHash,
-          role
-        }])
+        .insert([{ id: userId, email: cleanEmail, password_hash: passHash, role: 'user' }])
         .select('id, email, role, created_at')
         .single();
 
       if (insertError) {
-        if (insertError.message?.includes('duplicate') || insertError.code === '23505') {
+        if (insertError.code === '23505') {
           return NextResponse.json({ error: 'Este correo ya está registrado. Inicia sesión.' }, { status: 400 });
-        }
-        if (insertError.message?.includes('does not exist') || insertError.code === '42P01') {
-          return NextResponse.json({
-            error: '⚠️ La tabla "user_profiles" no existe. Ejecuta el SQL en tu panel de Supabase.'
-          }, { status: 500 });
         }
         return NextResponse.json({ error: `Error al registrar: ${insertError.message}` }, { status: 500 });
       }
@@ -72,7 +49,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, user: newUser });
     }
 
+    // ─── LOGIN ───────────────────────────────────────────────────────────────
     if (action === 'login') {
+      if (!email || !password) {
+        return NextResponse.json({ error: 'Email y contraseña requeridos' }, { status: 400 });
+      }
+      const cleanEmail = email.trim().toLowerCase();
+      const passHash = hashPassword(password);
+
       const { data: user, error: fetchError } = await supabaseAdmin
         .from('user_profiles')
         .select('id, email, role, password_hash')
@@ -80,11 +64,6 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (fetchError) {
-        if (fetchError.message?.includes('does not exist') || fetchError.code === '42P01') {
-          return NextResponse.json({
-            error: '⚠️ La tabla "user_profiles" no existe. Ejecuta el SQL en tu panel de Supabase.'
-          }, { status: 500 });
-        }
         return NextResponse.json({ error: `Error de base de datos: ${fetchError.message}` }, { status: 500 });
       }
 
@@ -96,6 +75,36 @@ export async function POST(req: NextRequest) {
         success: true,
         user: { id: user.id, email: user.email, role: user.role }
       });
+    }
+
+    // ─── PROMOVER / CAMBIAR ROL (solo admins) ────────────────────────────────
+    if (action === 'setRole') {
+      if (!adminId) {
+        return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
+      }
+
+      const isAdmin = await verifyAdmin(adminId);
+      if (!isAdmin) {
+        return NextResponse.json({ error: 'Solo los admins pueden cambiar roles.' }, { status: 403 });
+      }
+
+      const allowedRoles = ['admin', 'user'];
+      if (!allowedRoles.includes(newRole)) {
+        return NextResponse.json({ error: 'Rol no válido. Usa "admin" o "user".' }, { status: 400 });
+      }
+
+      const { data: updated, error: updateError } = await supabaseAdmin
+        .from('user_profiles')
+        .update({ role: newRole })
+        .eq('id', targetUserId)
+        .select('id, email, role')
+        .single();
+
+      if (updateError) {
+        return NextResponse.json({ error: `Error al cambiar rol: ${updateError.message}` }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true, user: updated });
     }
 
     return NextResponse.json({ error: 'Acción no válida' }, { status: 400 });

